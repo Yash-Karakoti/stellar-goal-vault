@@ -86,8 +86,10 @@ app.get("/api/health", (_req: Request, res: Response) => {
   });
 });
 
-app.get("/api/campaigns", (_req: Request, res: Response) => {
-  const data = listCampaigns().map((campaign) => ({
+app.get("/api/campaigns", (req: Request, res: Response) => {
+  const searchQuery = typeof req.query.q === "string" ? req.query.q : undefined;
+  
+  const data = listCampaigns({ searchQuery }).map((campaign) => ({
     ...campaign,
     progress: calculateProgress(campaign),
   }));
