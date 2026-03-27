@@ -40,20 +40,20 @@ export function CampaignTimeline({ history, isLoading }: CampaignTimelineProps) 
           {history.map((event) => {
             const isPending = event.metadata?.pending === true;
             return (
-            <article key={event.id} className={`timeline-item ${isPending ? "pending" : ""}`}>
-              <div className="timeline-dot" aria-hidden />
-              <div className="timeline-copy">
-                <strong>
-                  {describeEvent(event)}
-                  {isPending ? " (pending...)" : ""}
-                </strong>
-                <span className="muted">{formatTimestamp(event.timestamp)}</span>
-                <span className="muted">
-                  {event.actor ? `Actor: ${event.actor.slice(0, 10)}...` : "System event"}
-                  {typeof event.amount === "number" ? ` | Amount: ${event.amount}` : ""}
-                </span>
-              </div>
-            </article>
+              <article key={event.id} className={`timeline-item ${isPending ? "pending" : ""}`}>
+                <div className="timeline-dot" aria-hidden />
+                <div className="timeline-copy">
+                  <strong>
+                    {describeEvent(event)}
+                    {isPending ? " (pending...)" : ""}
+                  </strong>
+                  <span className="muted">{formatTimestamp(event.timestamp)}</span>
+                  <span className="muted">
+                    {event.actor ? `Actor: ${event.actor.slice(0, 10)}...` : "System event"}
+                    {typeof event.amount === "number" ? ` | Amount: ${event.amount}` : ""}
+                  </span>
+                </div>
+              </article>
             );
           })}
         </div>
