@@ -21,6 +21,11 @@ export interface PledgeInput {
   amount: number;
 }
 
+export interface ReconciledPledgeInput extends PledgeInput {
+  transactionHash: string;
+  confirmedAt?: number;
+}
+
 export interface CampaignRecord {
   id: string;
   creator: string;
@@ -56,6 +61,7 @@ export interface PledgeRecord {
   amount: number;
   createdAt: number;
   refundedAt?: number;
+  transactionHash?: string;
 }
 
 interface CampaignRow {
@@ -79,13 +85,22 @@ interface PledgeRow {
   amount: number;
   created_at: number;
   refunded_at: number | null;
+  transaction_hash: string | null;
 }
 
-type ServiceError = Error & { statusCode?: number };
+type ServiceError = Error & {
+  statusCode?: number;
+  code?: string;
+};
 
-function toServiceError(message: string, statusCode: number): ServiceError {
+function toServiceError(
+  message: string,
+  statusCode: number,
+  code = "BAD_REQUEST",
+): ServiceError {
   const error = new Error(message) as ServiceError;
   error.statusCode = statusCode;
+  error.code = code;
   return error;
 }
 
@@ -121,6 +136,7 @@ function rowToPledge(row: PledgeRow): PledgeRecord {
     amount: row.amount,
     createdAt: row.created_at,
     refundedAt: row.refunded_at ?? undefined,
+    transactionHash: row.transaction_hash ?? undefined,
   };
 }
 
@@ -142,6 +158,15 @@ function getActivePledgeCount(campaignId: string): number {
     .get(campaignId) as { count: number };
 
   return row.count;
+}
+
+function getPledgeByTransactionHash(transactionHash: string): PledgeRecord | undefined {
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT * FROM pledges WHERE transaction_hash = ?`)
+    .get(transactionHash) as PledgeRow | undefined;
+
+  return row ? rowToPledge(row) : undefined;
 }
 
 export function initCampaignStore(): void {
@@ -190,23 +215,17 @@ export interface ListCampaignsOptions {
 
 export function listCampaigns(options?: ListCampaignsOptions): CampaignRecord[] {
   const db = getDb();
-  
   let query = `SELECT * FROM campaigns`;
-  const params: any[] = [];
-  
+  const params: unknown[] = [];
+
   if (options?.searchQuery && options.searchQuery.trim()) {
     const searchTerm = `%${options.searchQuery.trim().toLowerCase()}%`;
-    query += ` WHERE 
-      LOWER(id) LIKE ? OR 
-      LOWER(title) LIKE ? OR 
-      LOWER(creator) LIKE ?`;
+    query += ` WHERE LOWER(id) LIKE ? OR LOWER(title) LIKE ? OR LOWER(creator) LIKE ?`;
     params.push(searchTerm, searchTerm, searchTerm);
   }
-  
-  query += ` ORDER BY created_at DESC`;
-  
-  const rows = db.prepare(query).all(...params) as CampaignRow[];
 
+  query += ` ORDER BY created_at DESC`;
+  const rows = db.prepare(query).all(...params) as CampaignRow[];
   return rows.map(rowToCampaign);
 }
 
@@ -222,7 +241,9 @@ export function getCampaign(campaignId: string): CampaignRecord | undefined {
 export function getPledges(campaignId: string): PledgeRecord[] {
   const db = getDb();
   const rows = db
-    .prepare(`SELECT * FROM pledges WHERE campaign_id = ? ORDER BY created_at DESC, id DESC`)
+    .prepare(
+      `SELECT * FROM pledges WHERE campaign_id = ? ORDER BY created_at DESC, id DESC`,
+    )
     .all(campaignId) as PledgeRow[];
 
   return rows.map(rowToPledge);
@@ -283,29 +304,95 @@ export function addPledge(campaignId: string, input: PledgeInput): CampaignRecor
   const db = getDb();
   const campaign = getCampaign(campaignId);
   if (!campaign) {
-    throw toServiceError("Campaign not found.", 404);
+    throw toServiceError("Campaign not found.", 404, "NOT_FOUND");
   }
 
   const progress = calculateProgress(campaign);
   if (!progress.canPledge) {
-    throw toServiceError("Campaign is no longer accepting pledges.", 400);
+    throw toServiceError(
+      "Campaign is no longer accepting pledges.",
+      400,
+      "INVALID_CAMPAIGN_STATE",
+    );
   }
 
   const createdAt = nowInSeconds();
+  const roundedAmount = round(input.amount);
   db.prepare(
-    `INSERT INTO pledges (campaign_id, contributor, amount, created_at, refunded_at)
-     VALUES (?, ?, ?, ?, NULL)`,
-  ).run(campaignId, input.contributor, round(input.amount), createdAt);
+    `INSERT INTO pledges (
+      campaign_id, contributor, amount, created_at, refunded_at, transaction_hash
+    ) VALUES (?, ?, ?, ?, NULL, NULL)`,
+  ).run(campaignId, input.contributor, roundedAmount, createdAt);
 
   db.prepare(`UPDATE campaigns SET pledged_amount = pledged_amount + ? WHERE id = ?`).run(
-    round(input.amount),
+    roundedAmount,
     campaignId,
   );
 
-  recordEvent(campaignId, "pledged", createdAt, input.contributor, round(input.amount), {
-    newTotalPledged: round(campaign.pledgedAmount + input.amount),
+  recordEvent(campaignId, "pledged", createdAt, input.contributor, roundedAmount, {
+    newTotalPledged: round(campaign.pledgedAmount + roundedAmount),
+    source: "backend-mvp",
   });
 
+  return getCampaign(campaignId)!;
+}
+
+export function reconcileOnChainPledge(
+  campaignId: string,
+  input: ReconciledPledgeInput,
+): CampaignRecord {
+  const existingPledge = getPledgeByTransactionHash(input.transactionHash);
+  if (existingPledge) {
+    if (existingPledge.campaignId !== campaignId) {
+      throw toServiceError(
+        "transactionHash already belongs to a different campaign.",
+        409,
+        "TRANSACTION_HASH_CONFLICT",
+      );
+    }
+
+    return getCampaign(campaignId)!;
+  }
+
+  const campaign = getCampaign(campaignId);
+  if (!campaign) {
+    throw toServiceError("Campaign not found.", 404, "NOT_FOUND");
+  }
+
+  const progress = calculateProgress(campaign);
+  if (!progress.canPledge) {
+    throw toServiceError(
+      "Campaign is no longer accepting pledges.",
+      400,
+      "INVALID_CAMPAIGN_STATE",
+    );
+  }
+
+  const db = getDb();
+  const createdAt = input.confirmedAt ?? nowInSeconds();
+  const roundedAmount = round(input.amount);
+
+  const reconcile = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO pledges (
+        campaign_id, contributor, amount, created_at, refunded_at, transaction_hash
+      ) VALUES (?, ?, ?, ?, NULL, ?)`,
+    ).run(campaignId, input.contributor, roundedAmount, createdAt, input.transactionHash);
+
+    db.prepare(`UPDATE campaigns SET pledged_amount = pledged_amount + ? WHERE id = ?`).run(
+      roundedAmount,
+      campaignId,
+    );
+
+    recordEvent(campaignId, "pledged", createdAt, input.contributor, roundedAmount, {
+      newTotalPledged: round(campaign.pledgedAmount + roundedAmount),
+      onChain: true,
+      reconciled: true,
+      txHash: input.transactionHash,
+    });
+  });
+
+  reconcile();
   return getCampaign(campaignId)!;
 }
 
@@ -313,15 +400,19 @@ export function claimCampaign(campaignId: string, creator: string): CampaignReco
   const db = getDb();
   const campaign = getCampaign(campaignId);
   if (!campaign) {
-    throw toServiceError("Campaign not found.", 404);
+    throw toServiceError("Campaign not found.", 404, "NOT_FOUND");
   }
   if (campaign.creator !== creator) {
-    throw toServiceError("Only the campaign creator can claim funds.", 403);
+    throw toServiceError(
+      "Only the campaign creator can claim funds.",
+      403,
+      "FORBIDDEN",
+    );
   }
 
   const progress = calculateProgress(campaign);
   if (!progress.canClaim) {
-    throw toServiceError("Campaign cannot be claimed yet.", 400);
+    throw toServiceError("Campaign cannot be claimed yet.", 400, "INVALID_CAMPAIGN_STATE");
   }
 
   const claimedAt = nowInSeconds();
@@ -341,12 +432,16 @@ export function refundContributor(campaignId: string, contributor: string): {
   const db = getDb();
   const campaign = getCampaign(campaignId);
   if (!campaign) {
-    throw toServiceError("Campaign not found.", 404);
+    throw toServiceError("Campaign not found.", 404, "NOT_FOUND");
   }
 
   const progress = calculateProgress(campaign);
   if (!progress.canRefund) {
-    throw toServiceError("Refunds are not available for this campaign.", 400);
+    throw toServiceError(
+      "Refunds are not available for this campaign.",
+      400,
+      "INVALID_CAMPAIGN_STATE",
+    );
   }
 
   const refundablePledges = db
@@ -358,7 +453,7 @@ export function refundContributor(campaignId: string, contributor: string): {
     .all(campaignId, contributor) as PledgeRow[];
 
   if (refundablePledges.length === 0) {
-    throw toServiceError("No refundable pledges found for this contributor.", 404);
+    throw toServiceError("No refundable pledges found for this contributor.", 404, "NOT_FOUND");
   }
 
   const refundedAmount = round(
