@@ -1,14 +1,43 @@
-
+import { useState, useMemo } from "react";
+import { LayoutGrid } from "lucide-react";
+import { Campaign } from "../types/campaign";
+import { EmptyState } from "./EmptyState";
 
 interface CampaignsTableProps {
   campaigns: Campaign[];
   selectedCampaignId: string | null;
   onSelect: (campaignId: string) => void;
   isLoading?: boolean;
+  invalidUrlCampaignId?: string | null;
 }
 
 function formatTimestamp(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString();
+}
+
+interface AssetFilterDropdownProps {
+  options: string[];
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}
+
+function AssetFilterDropdown({ options, value, onChange, disabled }: AssetFilterDropdownProps) {
+  return (
+    <select
+      className="filter-select"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+    >
+      <option value="">All assets</option>
+      {options.map((code) => (
+        <option key={code} value={code}>
+          {code}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 export function CampaignsTable({
@@ -16,10 +45,26 @@ export function CampaignsTable({
   selectedCampaignId,
   onSelect,
   isLoading,
+  invalidUrlCampaignId,
 }: CampaignsTableProps) {
+  const [selectedAssetCode, setSelectedAssetCode] = useState("");
 
+  const isEmpty = campaigns.length === 0;
 
-  if (campaigns.length === 0) {
+  const distinctAssetCodes = useMemo(
+    () => [...new Set(campaigns.map((c) => c.assetCode))].sort(),
+    [campaigns],
+  );
+
+  const filteredCampaigns = useMemo(
+    () =>
+      selectedAssetCode
+        ? campaigns.filter((c) => c.assetCode === selectedAssetCode)
+        : campaigns,
+    [campaigns, selectedAssetCode],
+  );
+
+  if (isEmpty) {
     return (
       <EmptyState
         variant="card"
@@ -40,11 +85,17 @@ export function CampaignsTable({
           </p>
         ) : (
           <p className="muted">
-            Monitor progress and open one campaign at a time in the action
-            panel.
+            Monitor progress and open one campaign at a time in the action panel.
           </p>
         )}
       </div>
+
+      {invalidUrlCampaignId && (
+        <p className="banner-warn muted">
+          Campaign <code>#{invalidUrlCampaignId}</code> from the URL was not found.
+          Showing the first available campaign instead.
+        </p>
+      )}
 
       <div className="board-controls">
         <AssetFilterDropdown
@@ -55,7 +106,7 @@ export function CampaignsTable({
         />
       </div>
 
-      {!isEmpty && filteredCampaigns.length === 0 ? (
+      {filteredCampaigns.length === 0 ? (
         <p className="muted">No campaigns match the current filters.</p>
       ) : (
         <div className="table-wrap">
@@ -71,7 +122,7 @@ export function CampaignsTable({
               </tr>
             </thead>
             <tbody>
-              {filteredCampaigns.map((campaign) => (
+              {filteredCampaigns.map((campaign: Campaign) => (
                 <tr key={campaign.id}>
                   <td>
                     <div className="stacked">

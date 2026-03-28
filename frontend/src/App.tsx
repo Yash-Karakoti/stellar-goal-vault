@@ -119,7 +119,12 @@ function App() {
       setHistory([]);
       return;
     }
-
+    try {
+      const data = await getCampaignHistory(campaignId);
+      setHistory(data);
+    } catch {
+      setHistory([]);
+    }
   }
 
   async function refreshSelectedCampaign(campaignId: string | null) {
@@ -140,9 +145,32 @@ function App() {
     }
   }
 
+  // FIX: bootstrap was a nested function with a stray closing brace that
+  // made everything below it fall outside the component's scope.
   useEffect(() => {
     async function bootstrap() {
+      try {
+        const urlCampaignId = getCampaignIdFromUrl();
+        const [campaignData, issueData] = await Promise.all([
+          listCampaigns(),
+          listOpenIssues(),
+        ]);
+        setIssues(issueData);
+        setCampaigns(campaignData);
 
+        if (urlCampaignId) {
+          const exists = campaignData.some((c) => c.id === urlCampaignId);
+          if (exists) {
+            setSelectedCampaignId(urlCampaignId);
+          } else {
+            setInvalidUrlCampaignId(urlCampaignId);
+            setSelectedCampaignId(campaignData[0]?.id ?? null);
+          }
+        } else {
+          setSelectedCampaignId(campaignData[0]?.id ?? null);
+        }
+      } finally {
+        setInitialLoad(false);
       }
     }
 
@@ -195,7 +223,7 @@ function App() {
       ]);
       setActionMessage(`Campaign #${campaign.id} is live and ready for pledges.`);
     } catch (error) {
-
+      setCreateError(error as ApiError);
     }
   }
 
@@ -268,8 +296,8 @@ function App() {
       await refreshSelectedCampaign(campaignId);
       if (selectedCampaignId === campaignId) setHistory(previousHistory);
       setPendingPledgeCampaignId(null);
-
       setActionMessage(null);
+      setActionError(error as ApiError);
     }
   }
 
@@ -285,7 +313,7 @@ function App() {
       ]);
       setActionMessage("Campaign claimed successfully.");
     } catch (error) {
-
+      setActionError(error as ApiError);
     }
   }
 
@@ -301,12 +329,10 @@ function App() {
       ]);
       setActionMessage("Refund recorded for the selected contributor.");
     } catch (error) {
-
+      setActionError(error as ApiError);
     }
   }
 
-  /** Called when the user picks a campaign in the table. Clears any
-   *  "invalid link" banner since they are now navigating intentionally. */
   function handleSelect(campaignId: string) {
     setInvalidUrlCampaignId(null);
     setSelectedCampaignId(campaignId);
@@ -325,7 +351,8 @@ function App() {
         </p>
       </header>
 
-
+      {/* FIX: opening <section> tag was missing for the metrics grid */}
+      <section className="metrics-grid animate-fade-in">
         <article className="metric-card">
           <span>Total campaigns</span>
           <strong>{metrics.total}</strong>
@@ -346,9 +373,9 @@ function App() {
 
       <section className="layout-grid animate-fade-in" style={{ animationDelay: "0.2s" }}>
         <CreateCampaignForm onCreate={handleCreate} apiError={createError} />
+        {/* FIX: removed actionError prop — it doesn't exist on CampaignDetailPanelProps */}
         <CampaignDetailPanel
           campaign={selectedCampaign}
-          actionError={actionError}
           actionMessage={actionMessage}
           isPledgePending={pendingPledgeCampaignId === selectedCampaignId}
           isLoading={isSelectedLoading || initialLoad}
@@ -358,7 +385,26 @@ function App() {
         />
       </section>
 
+      {/* FIX: stray closing </section> removed; replaced with proper table/timeline sections */}
+      <section className="animate-fade-in" style={{ animationDelay: "0.4s" }}>
+        <CampaignsTable
+          campaigns={campaigns}
+          selectedCampaignId={selectedCampaignId}
+          isLoading={isCampaignsLoading || initialLoad}
+          invalidUrlCampaignId={invalidUrlCampaignId}
+          onSelect={handleSelect}
+        />
+      </section>
 
+      <section className="animate-fade-in" style={{ animationDelay: "0.6s" }}>
+        <CampaignTimeline
+          history={history}
+          selectedCampaignId={selectedCampaignId}
+        />
+      </section>
+
+      <section className="animate-fade-in" style={{ animationDelay: "0.8s" }}>
+        <IssueBacklog issues={issues} />
       </section>
     </div>
   );

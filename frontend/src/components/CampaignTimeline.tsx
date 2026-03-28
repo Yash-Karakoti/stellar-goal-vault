@@ -27,20 +27,34 @@ function describeEvent(event: CampaignEvent): string {
 }
 
 export function CampaignTimeline({ history, isLoading }: CampaignTimelineProps) {
+  if (history.length === 0) {
+    return (
+      <EmptyState
+        variant="card"
+        icon={History}
+        title="Timeline"
+        message="No activity yet. Events will appear here as campaigns are created and pledged."
+      />
+    );
+  }
+
   return (
     <section className="card">
       <div className="section-heading">
         <h2>Timeline</h2>
-        <p className="muted">Each action is stored locally so contributors can follow campaign activity.</p>
+        <p className="muted">
+          Each action is stored locally so contributors can follow campaign activity.
+        </p>
       </div>
 
-
-      ) : (
-        <div className="timeline">
-          {history.map((event) => {
-            const isPending = event.metadata?.pending === true;
-            return (
-            <article key={event.id} className={`timeline-item ${isPending ? "pending" : ""}`}>
+      <div className="timeline">
+        {history.map((event: CampaignEvent) => {
+          const isPending = event.metadata?.pending === true;
+          return (
+            <article
+              key={event.id}
+              className={`timeline-item ${isPending ? "pending" : ""}`}
+            >
               <div className="timeline-dot" aria-hidden />
               <div className="timeline-copy">
                 <strong>
@@ -49,15 +63,18 @@ export function CampaignTimeline({ history, isLoading }: CampaignTimelineProps) 
                 </strong>
                 <span className="muted">{formatTimestamp(event.timestamp)}</span>
                 <span className="muted">
-                  {event.actor ? `Actor: ${event.actor.slice(0, 10)}...` : "System event"}
-                  {typeof event.amount === "number" ? ` | Amount: ${event.amount}` : ""}
+                  {event.actor
+                    ? `Actor: ${event.actor.slice(0, 10)}...`
+                    : "System event"}
+                  {typeof event.amount === "number"
+                    ? ` | Amount: ${event.amount}`
+                    : ""}
                 </span>
               </div>
             </article>
-            );
-          })}
-        </div>
-      )}
+          );
+        })}
+      </div>
     </section>
   );
 }
