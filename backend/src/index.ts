@@ -1,27 +1,34 @@
 import cors from "cors";
 import "dotenv/config";
 import express, { Request, Response } from "express";
-import { config } from "./config";
+import { randomUUID } from "crypto";
 import { z } from "zod";
+import { config, walletIntegrationReady } from "./config";
 import {
   addPledge,
   calculateProgress,
+  CampaignRecord,
+  CampaignStatus,
   claimCampaign,
   createCampaign,
   getCampaign,
   getCampaignWithProgress,
   initCampaignStore,
   listCampaigns,
+  reconcileOnChainPledge,
   refundContributor,
 } from "./services/campaignStore";
-import { startEventIndexer } from "./services/eventIndexer";
 import { getCampaignHistory } from "./services/eventHistory";
+import { startEventIndexer } from "./services/eventIndexer";
 import { fetchOpenIssues } from "./services/openIssues";
+import { AppError, ApiErrorResponse } from "./types/errors";
 import {
   campaignIdSchema,
   claimCampaignPayloadSchema,
   createCampaignPayloadSchema,
   createPledgePayloadSchema,
+  paginationSchema,
+  reconcilePledgePayloadSchema,
   refundPayloadSchema,
   zodIssuesToErrorMessage,
   zodIssuesToValidationIssues,
@@ -29,22 +36,44 @@ import {
 import { AppError, ApiErrorResponse } from "./types/errors";
 import { randomUUID } from "crypto";
 import { requestLoggingMiddleware } from "./middleware/requestLogging";
+import { checkDbHealth } from "./services/db";
 
 export const app = express();
 const port = Number(process.env.PORT ?? 3001);
+const CAMPAIGN_STATUSES: CampaignStatus[] = [
+  "open",
+  "funded",
+  "claimed",
+  "failed",
+];
 
-// Initialize DB and start indexer
+type CampaignListItem =
+  ReturnType<typeof calculateProgress> extends infer Progress
+  ? ReturnType<typeof listCampaigns>[number] & { progress: Progress }
+  : never;
+
+// Initialize DB
 initCampaignStore();
-startEventIndexer();
 
-app.use(cors());
+app.use(
+  cors({
+    origin: config.corsAllowedOrigins,
+    credentials: true,
+  }),
+);
 app.use(express.json());
 
 // Request ID middleware
-app.use((req: Request & { requestId?: string }, _res: Response, next: express.NextFunction) => {
-  req.requestId = randomUUID();
-  next();
-});
+app.use(
+  (
+    req: Request & { requestId?: string },
+    _res: Response,
+    next: express.NextFunction,
+  ) => {
+    req.requestId = randomUUID();
+    next();
+  },
+);
 
 // Request Logging Middleware
 app.use(requestLoggingMiddleware);
@@ -58,9 +87,9 @@ function sendValidationError(issues: z.ZodIssue[]) {
   );
 }
 
-function parseCampaignId(campaignIdRaw: unknown):
-  | { ok: true; value: string }
-  | { ok: false; issues: z.ZodIssue[] } {
+function parseCampaignId(
+  campaignIdRaw: unknown,
+): { ok: true; value: string } | { ok: false; issues: z.ZodIssue[] } {
   if (typeof campaignIdRaw !== "string") {
     return {
       ok: false,
@@ -82,21 +111,146 @@ function parseCampaignId(campaignIdRaw: unknown):
   return { ok: true, value: parsed.data };
 }
 
+export function normalizeQueryValue(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+export function normalizeAssetFilter(assetRaw: unknown): string | undefined {
+  const asset = normalizeQueryValue(assetRaw)?.toUpperCase();
+  if (!asset) {
+    return undefined;
+  }
+
+  return config.allowedAssets.includes(asset) ? asset : undefined;
+}
+
+export function normalizeStatusFilter(
+  statusRaw: unknown,
+): CampaignStatus | undefined {
+  const status = normalizeQueryValue(statusRaw)?.toLowerCase();
+  if (!status) {
+    return undefined;
+  }
+
+  return CAMPAIGN_STATUSES.includes(status as CampaignStatus)
+    ? (status as CampaignStatus)
+    : undefined;
+}
+
+export function parseCampaignListFilters(query: {
+  asset?: unknown;
+  status?: unknown;
+  q?: unknown;
+}): {
+  asset?: string;
+  status?: CampaignStatus;
+  searchQuery?: string;
+} {
+  return {
+    asset: normalizeAssetFilter(query.asset),
+    status: normalizeStatusFilter(query.status),
+    searchQuery: normalizeQueryValue(query.q),
+  };
+}
+
+export function filterCampaignList(
+  campaigns: CampaignListItem[],
+  filters: {
+    asset?: string;
+    status?: CampaignStatus;
+  },
+): CampaignListItem[] {
+  return campaigns.filter((campaign) => {
+    const matchesAsset =
+      !filters.asset || campaign.assetCode.toUpperCase() === filters.asset;
+    const matchesStatus =
+      !filters.status || campaign.progress.status === filters.status;
+
+    return matchesAsset && matchesStatus;
+  });
+}
+
 app.get("/api/health", (_req: Request, res: Response) => {
-  res.json({
+  const database = checkDbHealth();
+  const healthy = database.reachable;
+
+  res.status(healthy ? 200 : 503).json({
     service: "stellar-goal-vault-backend",
-    status: "ok",
+    status: healthy ? "ok" : "degraded",
     timestamp: new Date().toISOString(),
+    uptimeSeconds: Number(process.uptime().toFixed(3)),
+    database,
   });
 });
 
-app.get("/api/campaigns", (_req: Request, res: Response) => {
-  const data = listCampaigns().map((campaign) => ({
+app.get("/api/campaigns", (req: Request, res: Response) => {
+  const rawStatus = req.query.status;
+
+  // Validate status explicitly (to return 400 on invalid values)
+  let status: CampaignStatus | undefined;
+
+  if (rawStatus !== undefined) {
+    if (typeof rawStatus !== "string") {
+      throw new AppError(
+        "Invalid status query parameter.",
+        400,
+        "INVALID_STATUS",
+      );
+    }
+
+    const normalized = rawStatus.trim().toLowerCase();
+
+    if (!CAMPAIGN_STATUSES.includes(normalized as CampaignStatus)) {
+      throw new AppError(
+        `Invalid status. Allowed values: ${CAMPAIGN_STATUSES.join(", ")}`,
+        400,
+        "INVALID_STATUS",
+      );
+    }
+
+    status = normalized as CampaignStatus;
+  }
+
+  // Fetch campaigns
+  const campaigns = listCampaigns();
+
+  // Attach progress
+  let data: CampaignListItem[] = campaigns.map((campaign) => ({
     ...campaign,
     progress: calculateProgress(campaign),
   }));
 
-  res.json({ data });
+  // Apply status filter (server-side)
+  if (status) {
+    data = data.filter((c) => c.progress.status === status);
+  }
+
+  const { campaigns, totalCount } = listCampaigns({
+    ...filters,
+    assetCode: filters.asset,
+    page,
+    limit,
+  });
+
+  const data: CampaignListItem[] = campaigns.map((campaign) => ({
+    ...campaign,
+    progress: calculateProgress(campaign),
+  }));
+
+  res.json({
+    data,
+    pagination: {
+      totalCount,
+      page,
+      limit,
+      totalPages: Math.ceil(totalCount / limit),
+    },
+  });
 });
 
 app.get("/api/campaigns/:id", (req: Request, res: Response) => {
@@ -122,11 +276,17 @@ app.post("/api/campaigns", (req: Request, res: Response) => {
   }
 
   if (parsedBody.data.deadline <= Math.floor(Date.now() / 1000)) {
-    throw new AppError("deadline must be in the future.", 400, "INVALID_DEADLINE");
+    throw new AppError(
+      "deadline must be in the future.",
+      400,
+      "INVALID_DEADLINE",
+    );
   }
 
   const campaign = createCampaign(parsedBody.data);
-  res.status(201).json({ data: { ...campaign, progress: calculateProgress(campaign) } });
+  res
+    .status(201)
+    .json({ data: { ...campaign, progress: calculateProgress(campaign) } });
 });
 
 app.post("/api/campaigns/:id/pledges", (req: Request, res: Response) => {
@@ -143,7 +303,31 @@ app.post("/api/campaigns/:id/pledges", (req: Request, res: Response) => {
   }
 
   const campaign = addPledge(parsedId.value, parsedBody.data);
-  res.status(201).json({ data: { ...campaign, progress: calculateProgress(campaign) } });
+  res
+    .status(201)
+    .json({ data: { ...campaign, progress: calculateProgress(campaign) } });
+});
+
+app.post("/api/campaigns/:id/pledges/reconcile", (req: Request, res: Response) => {
+  const parsedId = parseCampaignId(req.params.id);
+  if (!parsedId.ok) {
+    sendValidationError(parsedId.issues);
+    return;
+  }
+
+  const parsedBody = reconcilePledgePayloadSchema.safeParse(req.body);
+  if (!parsedBody.success) {
+    sendValidationError(parsedBody.error.issues);
+    return;
+  }
+
+  const campaign = reconcileOnChainPledge(parsedId.value, parsedBody.data);
+  res.status(201).json({
+    data: {
+      campaign: { ...campaign, progress: calculateProgress(campaign) },
+      transactionHash: parsedBody.data.transactionHash,
+    },
+  });
 });
 
 app.post("/api/campaigns/:id/claim", (req: Request, res: Response) => {
@@ -159,7 +343,11 @@ app.post("/api/campaigns/:id/claim", (req: Request, res: Response) => {
     return;
   }
 
-  const campaign = claimCampaign(parsedId.value, parsedBody.data.creator);
+  const campaign = claimCampaign(parsedId.value, {
+    creator: parsedBody.data.creator,
+    transactionHash: parsedBody.data.transactionHash,
+    confirmedAt: parsedBody.data.confirmedAt,
+  });
   res.json({ data: { ...campaign, progress: calculateProgress(campaign) } });
 });
 
@@ -209,34 +397,47 @@ app.get("/api/open-issues", async (_req: Request, res: Response) => {
 app.get("/api/config", (_req: Request, res: Response) => {
   res.json({
     data: {
+      allowedAssets: config.allowedAssets,
+      sorobanRpcUrl: config.sorobanRpcUrl,
+      contractId: config.contractId,
+      networkPassphrase: config.networkPassphrase,
+      contractAmountDecimals: config.contractAmountDecimals,
+      walletIntegrationReady,
     },
   });
 });
 
 // Global Error Handler
-app.use((err: any, req: Request, res: Response, _next: express.NextFunction) => {
-  const statusCode = err instanceof AppError ? err.statusCode : (err.statusCode ?? 500);
-  const code = err instanceof AppError ? err.code : (err.code ?? "INTERNAL_SERVER_ERROR");
-  const response: ApiErrorResponse = {
-    success: false,
-    error: {
-      code,
-      message: err.message || "An unexpected error occurred",
-      requestId: (req as any).requestId,
-    },
-  };
+app.use(
+  (err: any, req: Request, res: Response, _next: express.NextFunction) => {
+    const statusCode =
+      err instanceof AppError ? err.statusCode : (err.statusCode ?? 500);
+    const code =
+      err instanceof AppError
+        ? err.code
+        : (err.code ?? "INTERNAL_SERVER_ERROR");
+    const response: ApiErrorResponse = {
+      success: false,
+      error: {
+        code,
+        message: err.message || "An unexpected error occurred",
+        requestId: (req as any).requestId,
+      },
+    };
 
-  if (err instanceof AppError && err.details) {
-    response.error.details = err.details;
-  } else if (err.details) {
-    response.error.details = err.details;
-  }
+    if (err instanceof AppError && err.details) {
+      response.error.details = err.details;
+    } else if (err.details) {
+      response.error.details = err.details;
+    }
 
-  res.status(statusCode).json(response);
-});
+    res.status(statusCode).json(response);
+  },
+);
 
 function startServer() {
   initCampaignStore();
+  startEventIndexer();
   app.listen(port, () => {
     console.log(`Stellar Goal Vault API listening on http://localhost:${port}`);
   });

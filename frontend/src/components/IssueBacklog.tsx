@@ -6,18 +6,39 @@ interface IssueBacklogProps {
   issues: OpenIssue[];
   isLoading?: boolean;
 }
+
 export function IssueBacklog({ issues, isLoading }: IssueBacklogProps) {
+  if (issues.length === 0) {
+    return (
+      <EmptyState
+        variant="card"
+        icon={ListTodo}
+        title="Contribution backlog"
+        message="No backlog items yet."
+      />
+    );
+  }
+
   return (
     <section className="card">
       <div className="section-heading">
         <h2>Contribution backlog</h2>
-        <p className="muted">Ready-to-open issue ideas for your public repo after you push it.</p>
+        <p className="muted">
+          Ready-to-open issue ideas for your public repo after you push it.
+        </p>
       </div>
 
-      <div className="issue-list">
-
-        ) : (
-          issues.map((issue) => (
+      {isLoading ? (
+        <p className="muted">Loading contribution ideas...</p>
+      ) : issues.length === 0 ? (
+        <EmptyState
+          icon={ListTodo}
+          title="No seeded issues"
+          message="The repo can still be extended, but the example backlog is empty right now."
+        />
+      ) : (
+        <div className="issue-list">
+          {issues.map((issue) => (
             <article key={issue.id} className="issue-item">
               <div className="issue-topline">
                 <strong>{issue.title}</strong>
@@ -33,9 +54,9 @@ export function IssueBacklog({ issues, isLoading }: IssueBacklogProps) {
                 <span className="chip-emphasis">{issue.complexity}</span>
               </div>
             </article>
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

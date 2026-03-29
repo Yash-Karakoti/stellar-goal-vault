@@ -1,25 +1,73 @@
-
+import { useMemo, useState } from "react";
+import { LayoutGrid } from "lucide-react";
+import { Campaign } from "../types/campaign";
+import { AssetFilterDropdown } from "./AssetFilterDropdown";
+import { EmptyState } from "./EmptyState";
+import { applyFilters, getDistinctAssetCodes } from "./campaignsTableUtils";
 
 interface CampaignsTableProps {
   campaigns: Campaign[];
   selectedCampaignId: string | null;
   onSelect: (campaignId: string) => void;
   isLoading?: boolean;
+  invalidUrlCampaignId?: string | null;
 }
 
 function formatTimestamp(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString();
 }
 
+interface AssetFilterDropdownProps {
+  options: string[];
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}
+
+function AssetFilterDropdown({ options, value, onChange, disabled }: AssetFilterDropdownProps) {
+  return (
+    <select
+      className="filter-select"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+    >
+      <option value="">All assets</option>
+      {options.map((code) => (
+        <option key={code} value={code}>
+          {code}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export function CampaignsTable({
   campaigns,
   selectedCampaignId,
   onSelect,
-  isLoading,
+  invalidUrlCampaignId,
+  isLoading = false,
 }: CampaignsTableProps) {
+  const [selectedAssetCode, setSelectedAssetCode] = useState("");
+  const distinctAssetCodes = useMemo(() => getDistinctAssetCodes(campaigns), [campaigns]);
+  const filteredCampaigns = useMemo(
+    () => applyFilters(campaigns, selectedAssetCode, ""),
+    [campaigns, selectedAssetCode],
+  );
 
+  if (isLoading) {
+    return (
+      <section className="card">
+        <div className="section-heading">
+          <h2>Campaign board</h2>
+          <p className="muted">Loading campaigns...</p>
+        </div>
+      </section>
+    );
+  }
 
-  if (campaigns.length === 0) {
+  if (isEmpty) {
     return (
       <EmptyState
         variant="card"
@@ -40,22 +88,28 @@ export function CampaignsTable({
           </p>
         ) : (
           <p className="muted">
-            Monitor progress and open one campaign at a time in the action
-            panel.
+            Monitor progress and open one campaign at a time in the action panel.
           </p>
         )}
       </div>
+
+      {invalidUrlCampaignId && (
+        <p className="banner-warn muted">
+          Campaign <code>#{invalidUrlCampaignId}</code> from the URL was not found.
+          Showing the first available campaign instead.
+        </p>
+      )}
 
       <div className="board-controls">
         <AssetFilterDropdown
           options={distinctAssetCodes}
           value={selectedAssetCode}
           onChange={setSelectedAssetCode}
-          disabled={isEmpty}
+          disabled={campaigns.length === 0}
         />
       </div>
 
-      {!isEmpty && filteredCampaigns.length === 0 ? (
+      {filteredCampaigns.length === 0 ? (
         <p className="muted">No campaigns match the current filters.</p>
       ) : (
         <div className="table-wrap">
@@ -71,7 +125,7 @@ export function CampaignsTable({
               </tr>
             </thead>
             <tbody>
-              {filteredCampaigns.map((campaign) => (
+              {filteredCampaigns.map((campaign: Campaign) => (
                 <tr key={campaign.id}>
                   <td>
                     <div className="stacked">
@@ -82,8 +136,7 @@ export function CampaignsTable({
                   <td className="mono">{campaign.creator.slice(0, 8)}...</td>
                   <td>
                     <div className="progress-copy">
-                      {campaign.pledgedAmount} / {campaign.targetAmount}{" "}
-                      {campaign.assetCode}
+                      {campaign.pledgedAmount} / {campaign.targetAmount} {campaign.assetCode}
                     </div>
                     <div className="progress-bar" aria-hidden>
                       <div
@@ -92,9 +145,7 @@ export function CampaignsTable({
                         }}
                       />
                     </div>
-                    <span className="muted">
-                      {campaign.progress.percentFunded}% funded
-                    </span>
+                    <span className="muted">{campaign.progress.percentFunded}% funded</span>
                   </td>
                   <td>
                     <span className={`badge badge-${campaign.progress.status}`}>
@@ -103,16 +154,12 @@ export function CampaignsTable({
                   </td>
                   <td className="stacked">
                     <span>{formatTimestamp(campaign.deadline)}</span>
-                    <span className="muted">
-                      {campaign.progress.hoursLeft}h left
-                    </span>
+                    <span className="muted">{campaign.progress.hoursLeft}h left</span>
                   </td>
                   <td>
                     <button
                       className={
-                        selectedCampaignId === campaign.id
-                          ? "btn-secondary"
-                          : "btn-ghost"
+                        selectedCampaignId === campaign.id ? "btn-secondary" : "btn-ghost"
                       }
                       type="button"
                       onClick={() => onSelect(campaign.id)}
