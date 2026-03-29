@@ -21,6 +21,7 @@ const mockCampaign: Campaign = {
     remainingAmount: 100,
     hoursLeft: 1,
     pledgeCount: 0,
+    hoursLeft: 2,
     canPledge: true,
     canClaim: false,
     canRefund: false,
@@ -38,11 +39,15 @@ describe("CampaignDetailPanel", () => {
     render(
       <CampaignDetailPanel
         campaign={null}
+        appConfig={mockConfig}
+        connectedWallet={null}
+        onConnectWallet={async () => {}}
         onPledge={async () => {}}
         onClaim={async () => {}}
         onRefund={async () => {}}
       />,
     );
+
     expect(screen.getByText(/Pick a campaign/i)).toBeInTheDocument();
   });
 
@@ -50,6 +55,9 @@ describe("CampaignDetailPanel", () => {
     render(
       <CampaignDetailPanel
         campaign={mockCampaign}
+        appConfig={mockConfig}
+        connectedWallet={null}
+        onConnectWallet={async () => {}}
         onPledge={async () => {}}
         onClaim={async () => {}}
         onRefund={async () => {}}
@@ -76,7 +84,9 @@ describe("CampaignDetailPanel", () => {
     render(
       <CampaignDetailPanel
         campaign={mockCampaign}
-        actionMessage="Pledge successful"
+        appConfig={mockConfig}
+        connectedWallet={null}
+        onConnectWallet={onConnectWallet}
         onPledge={async () => {}}
         onClaim={async () => {}}
         onRefund={async () => {}}
@@ -92,6 +102,9 @@ describe("CampaignDetailPanel", () => {
     render(
       <CampaignDetailPanel
         campaign={mockCampaign}
+        appConfig={mockConfig}
+        connectedWallet={`G${"B".repeat(55)}`}
+        onConnectWallet={async () => {}}
         onPledge={onPledge}
         onClaim={async () => {}}
         onRefund={async () => {}}
@@ -110,6 +123,7 @@ describe("CampaignDetailPanel", () => {
     const user = userEvent.setup();
     const onPledge = vi.fn().mockResolvedValue(undefined);
 
+  it("shows an action error when provided", () => {
     render(
       <CampaignDetailPanel
         campaign={mockCampaign}

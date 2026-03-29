@@ -1,8 +1,9 @@
 import cors from "cors";
 import "dotenv/config";
 import express, { Request, Response } from "express";
-import { config } from "./config";
+import { randomUUID } from "crypto";
 import { z } from "zod";
+import { config, walletIntegrationReady } from "./config";
 import {
   addPledge,
   calculateProgress,
@@ -14,23 +15,24 @@ import {
   getCampaignWithProgress,
   initCampaignStore,
   listCampaigns,
+  reconcileOnChainPledge,
   refundContributor,
 } from "./services/campaignStore";
-import { startEventIndexer } from "./services/eventIndexer";
 import { getCampaignHistory } from "./services/eventHistory";
+import { startEventIndexer } from "./services/eventIndexer";
 import { fetchOpenIssues } from "./services/openIssues";
+import { AppError, ApiErrorResponse } from "./types/errors";
 import {
   campaignIdSchema,
   claimCampaignPayloadSchema,
   createCampaignPayloadSchema,
   createPledgePayloadSchema,
   paginationSchema,
+  reconcilePledgePayloadSchema,
   refundPayloadSchema,
   zodIssuesToErrorMessage,
   zodIssuesToValidationIssues,
 } from "./validation/schemas";
-import { AppError, ApiErrorResponse } from "./types/errors";
-import { randomUUID } from "crypto";
 import { checkDbHealth } from "./services/db";
 
 export const app = express();
@@ -46,7 +48,6 @@ type CampaignListItem =
   ReturnType<typeof calculateProgress> extends infer Progress
   ? ReturnType<typeof listCampaigns>[number] & { progress: Progress }
   : never;
-
 
 // Initialize DB
 initCampaignStore();
@@ -151,7 +152,6 @@ export function parseCampaignListFilters(query: {
   };
 }
 
-
 export function filterCampaignList(
   campaigns: CampaignListItem[],
   filters: {
@@ -247,7 +247,6 @@ app.get("/api/campaigns", (req: Request, res: Response) => {
   });
 });
 
-
 app.get("/api/campaigns/:id", (req: Request, res: Response) => {
   const parsedId = parseCampaignId(req.params.id);
   if (!parsedId.ok) {
@@ -303,6 +302,28 @@ app.post("/api/campaigns/:id/pledges", (req: Request, res: Response) => {
     .json({ data: { ...campaign, progress: calculateProgress(campaign) } });
 });
 
+app.post("/api/campaigns/:id/pledges/reconcile", (req: Request, res: Response) => {
+  const parsedId = parseCampaignId(req.params.id);
+  if (!parsedId.ok) {
+    sendValidationError(parsedId.issues);
+    return;
+  }
+
+  const parsedBody = reconcilePledgePayloadSchema.safeParse(req.body);
+  if (!parsedBody.success) {
+    sendValidationError(parsedBody.error.issues);
+    return;
+  }
+
+  const campaign = reconcileOnChainPledge(parsedId.value, parsedBody.data);
+  res.status(201).json({
+    data: {
+      campaign: { ...campaign, progress: calculateProgress(campaign) },
+      transactionHash: parsedBody.data.transactionHash,
+    },
+  });
+});
+
 app.post("/api/campaigns/:id/claim", (req: Request, res: Response) => {
   const parsedId = parseCampaignId(req.params.id);
   if (!parsedId.ok) {
@@ -316,7 +337,11 @@ app.post("/api/campaigns/:id/claim", (req: Request, res: Response) => {
     return;
   }
 
-  const campaign = claimCampaign(parsedId.value, parsedBody.data.creator);
+  const campaign = claimCampaign(parsedId.value, {
+    creator: parsedBody.data.creator,
+    transactionHash: parsedBody.data.transactionHash,
+    confirmedAt: parsedBody.data.confirmedAt,
+  });
   res.json({ data: { ...campaign, progress: calculateProgress(campaign) } });
 });
 
@@ -365,7 +390,14 @@ app.get("/api/open-issues", async (_req: Request, res: Response) => {
 
 app.get("/api/config", (_req: Request, res: Response) => {
   res.json({
-    data: {},
+    data: {
+      allowedAssets: config.allowedAssets,
+      sorobanRpcUrl: config.sorobanRpcUrl,
+      contractId: config.contractId,
+      networkPassphrase: config.networkPassphrase,
+      contractAmountDecimals: config.contractAmountDecimals,
+      walletIntegrationReady,
+    },
   });
 });
 
