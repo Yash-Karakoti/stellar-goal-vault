@@ -52,25 +52,26 @@ beforeEach(() => {
 
 describe("campaign store search", () => {
   it("returns all campaigns when no search query is provided", () => {
-    const campaigns = listCampaigns();
-    expect(Array.isArray(campaigns)).toBe(true);
+    const result = listCampaigns();
+    expect(Array.isArray(result.campaigns)).toBe(true);
   });
 
   it("returns empty array when search query matches nothing", () => {
-    const campaigns = listCampaigns({ searchQuery: "nonexistent-campaign-xyz-123" });
-    expect(campaigns).toEqual([]);
+    const result = listCampaigns({ searchQuery: "nonexistent-campaign-xyz-123" });
+    expect(result.campaigns).toEqual([]);
+    expect(result.totalCount).toBe(0);
   });
 
   it("handles empty search query gracefully", () => {
     const allCampaigns = listCampaigns();
     const emptySearchCampaigns = listCampaigns({ searchQuery: "" });
-    expect(emptySearchCampaigns.length).toBe(allCampaigns.length);
+    expect(emptySearchCampaigns.campaigns.length).toBe(allCampaigns.campaigns.length);
   });
 
   it("handles whitespace-only search query gracefully", () => {
     const allCampaigns = listCampaigns();
     const whitespaceSearchCampaigns = listCampaigns({ searchQuery: "   " });
-    expect(whitespaceSearchCampaigns.length).toBe(allCampaigns.length);
+    expect(whitespaceSearchCampaigns.campaigns.length).toBe(allCampaigns.campaigns.length);
   });
 
   it("searches campaigns by title, creator, and id case-insensitively", () => {
@@ -84,11 +85,11 @@ describe("campaign store search", () => {
       deadline: futureDeadline,
     });
 
-    expect(listCampaigns({ searchQuery: "rocket" })[0].id).toBe(campaign.id);
-    expect(listCampaigns({ searchQuery: "gaaa" }).some((row) => row.id === campaign.id)).toBe(
-      true,
-    );
-    expect(listCampaigns({ searchQuery: campaign.id })[0].id).toBe(campaign.id);
+    expect(listCampaigns({ searchQuery: "rocket" }).campaigns[0].id).toBe(campaign.id);
+    expect(
+      listCampaigns({ searchQuery: "gaaa" }).campaigns.some((row) => row.id === campaign.id),
+    ).toBe(true);
+    expect(listCampaigns({ searchQuery: campaign.id }).campaigns[0].id).toBe(campaign.id);
   });
 });
 
@@ -120,7 +121,8 @@ describe("on-chain pledge reconciliation", () => {
 
     const history = getCampaignHistory(campaign.id);
     const pledgeEvent = history.find((event) => event.eventType === "pledged");
-    expect(pledgeEvent?.metadata?.txHash).toBe(TX_HASH);
+    expect(pledgeEvent?.blockchainMetadata?.txHash).toBe(TX_HASH);
+    expect(pledgeEvent?.blockchainMetadata?.source).toBe("soroban");
     expect(pledgeEvent?.metadata?.onChain).toBe(true);
   });
 

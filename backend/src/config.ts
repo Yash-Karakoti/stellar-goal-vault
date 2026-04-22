@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { normalizeLogLevel } from "./logger";
 
 const DEFAULT_NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 
@@ -20,6 +21,7 @@ const parseInteger = (value: string | undefined, fallback: number): number => {
 
 export const config = {
   port: Number(process.env.PORT ?? 3001),
+  logLevel: normalizeLogLevel(process.env.LOG_LEVEL),
   allowedAssets: (process.env.ALLOWED_ASSETS ?? "USDC,XLM")
     .split(",")
     .map((value) => value.trim().toUpperCase())

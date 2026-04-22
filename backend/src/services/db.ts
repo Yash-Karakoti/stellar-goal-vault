@@ -1,12 +1,13 @@
 import Database from "better-sqlite3";
 import path from "path";
 
-const DB_PATH =
-  process.env.DB_PATH || path.join(__dirname, "..", "..", "data", "campaigns.db");
-
 type SQLiteDatabase = ReturnType<typeof Database>;
 
 let db: SQLiteDatabase | null = null;
+
+function resolveDbPath(): string {
+  return process.env.DB_PATH || path.join(__dirname, "..", "..", "data", "campaigns.db");
+}
 
 export type DbHealthStatus = "up" | "down";
 
@@ -24,17 +25,25 @@ export function initDb(): void {
   }
 
   const fs = require("fs") as typeof import("fs");
-  const dir = path.dirname(DB_PATH);
+  const dbPath = resolveDbPath();
+  const dir = path.dirname(dbPath);
 
-  if (!fs.existsSync(dir)) {
+  if (dbPath !== ":memory:" && !fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  db = new Database(DB_PATH);
+  db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
 
   migrate(db);
+}
+
+export function resetDbForTests(): void {
+  if (db) {
+    db.close();
+    db = null;
+  }
 }
 
 export function checkDbHealth(): {
@@ -99,8 +108,6 @@ function migrate(database: SQLiteDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_pledges_campaign_id ON pledges(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_campaign_events_campaign_id ON campaign_events(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_campaign_events_timestamp ON campaign_events(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_campaign_events_tx_hash ON campaign_events(json_extract(blockchain_metadata, '$.txHash'));
-    CREATE INDEX IF NOT EXISTS idx_campaign_events_ledger ON campaign_events(json_extract(blockchain_metadata, '$.ledgerNumber'));
   `);
 
   const pledgeColumns = database
@@ -123,4 +130,11 @@ function migrate(database: SQLiteDatabase): void {
   } catch {
     // Column already exists, ignore error.
   }
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_campaign_events_tx_hash
+    ON campaign_events(json_extract(blockchain_metadata, '$.txHash'));
+    CREATE INDEX IF NOT EXISTS idx_campaign_events_ledger
+    ON campaign_events(json_extract(blockchain_metadata, '$.ledgerNumber'));
+  `);
 }

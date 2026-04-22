@@ -542,6 +542,13 @@ function reconcileOnChainClaim(
   return getCampaign(campaignId)!;
 }
 
+export function claimCampaign(
+  campaignId: string,
+  input: ReconciledClaimInput,
+): CampaignRecord {
+  return reconcileOnChainClaim(campaignId, input);
+}
+
 export function refundContributor(
   campaignId: string,
   contributor: string,
