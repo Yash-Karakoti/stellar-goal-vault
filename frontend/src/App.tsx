@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Moon, Sun } from "lucide-react";
 import { CampaignDetailPanel } from "./components/CampaignDetailPanel";
 import { CampaignsTable } from "./components/CampaignsTable";
 import { CampaignTimeline } from "./components/CampaignTimeline";
@@ -31,6 +32,8 @@ import {
 } from "./types/campaign";
 
 const DEFAULT_NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
+const THEME_STORAGE_KEY = "stellar-goal-vault-theme";
+type ThemeMode = "light" | "dark";
 
 function round(value: number): number {
   return Number(value.toFixed(2));
@@ -74,6 +77,15 @@ function toApiError(error: unknown): ApiError {
   return { message: "Something went wrong." };
 }
 
+function getInitialThemeMode(): ThemeMode {
+  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+  if (storedTheme === "light" || storedTheme === "dark") {
+    return storedTheme;
+  }
+
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 function App() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [issues, setIssues] = useState<OpenIssue[]>([]);
@@ -98,6 +110,12 @@ function App() {
   const [invalidUrlCampaignId, setInvalidUrlCampaignId] = useState<string | null>(null);
   const [connectedWallet, setConnectedWallet] = useState<string | null>(null);
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => getInitialThemeMode());
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+  }, [themeMode]);
 
   useEffect(() => {
     setCampaignIdInUrl(selectedCampaignId);
@@ -410,10 +428,25 @@ function App() {
     setSelectedCampaignId(campaignId);
   }
 
+  function handleThemeToggle() {
+    setThemeMode((current) => (current === "dark" ? "light" : "dark"));
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
-        <p className="eyebrow">Soroban crowdfunding MVP</p>
+        <div className="hero-topline">
+          <p className="eyebrow">Soroban crowdfunding MVP</p>
+          <button
+            type="button"
+            className="btn-ghost theme-toggle"
+            onClick={handleThemeToggle}
+            aria-label={`Switch to ${themeMode === "dark" ? "light" : "dark"} mode`}
+            title={`Switch to ${themeMode === "dark" ? "light" : "dark"} mode`}
+          >
+            {themeMode === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+        </div>
         <h1>Stellar Goal Vault</h1>
         <p className="hero-copy">
           Create funding goals, collect pledges, and reconcile claim and refund flows
