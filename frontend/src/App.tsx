@@ -12,6 +12,7 @@ import {
   getCampaign,
   getCampaignHistory,
   listCampaigns,
+  softDeleteCampaign,
   listOpenIssues,
   reconcilePledge,
   refundCampaign,
@@ -389,26 +390,60 @@ function App() {
     }
   }
 
-  async function handleRefund(campaignId: string, contributor: string) {
-    setActionError(null);
-    setActionMessage("Preparing Soroban refund transaction...");
-
-    try {
-      const sorobanReceipt = await submitRefundTransaction(campaignId, contributor);
-      await refundCampaign(campaignId, contributor, sorobanReceipt);
-      await refreshCampaigns(campaignId);
-      await refreshSelectedData(campaignId);
-      setActionMessage("Contributor refunded successfully.");
-    } catch (error) {
-      setActionError(toApiError(error));
-      setActionMessage(null);
-    }
+async function handleSoftDelete(campaignId: string) {
+  if (!connectedWallet) {
+    setActionError({
+      message: "Connect wallet first.",
+      code: "WALLET_REQUIRED",
+    });
+    return;
   }
 
-  function handleSelect(campaignId: string) {
-    setInvalidUrlCampaignId(null);
-    setSelectedCampaignId(campaignId);
+  if (connectedWallet !== selectedCampaign?.creator) {
+    setActionError({
+      message: "Only creator can soft delete.",
+      code: "FORBIDDEN",
+    });
+    return;
   }
+
+  if (!confirm(`Soft delete campaign #${campaignId}? Data preserved, hidden from lists.`)) {
+    return;
+  }
+
+  setActionError(null);
+  setActionMessage("Soft deleting...");
+
+  try {
+    await softDeleteCampaign(campaignId);
+    await refreshCampaigns();
+    setActionMessage("Campaign soft deleted.");
+  } catch (error) {
+    setActionError(toApiError(error));
+    setActionMessage(null);
+  }
+}
+
+async function handleRefund(campaignId: string, contributor: string) {
+  setActionError(null);
+  setActionMessage("Preparing Soroban refund transaction...");
+
+  try {
+    const sorobanReceipt = await submitRefundTransaction(campaignId, contributor);
+    await refundCampaign(campaignId, contributor, sorobanReceipt);
+    await refreshCampaigns(campaignId);
+    await refreshSelectedData(campaignId);
+    setActionMessage("Contributor refunded successfully.");
+  } catch (error) {
+    setActionError(toApiError(error));
+    setActionMessage(null);
+  }
+}
+
+function handleSelect(campaignId: string) {
+  setInvalidUrlCampaignId(null);
+  setSelectedCampaignId(campaignId);
+}
 
   return (
     <div className="app-shell">
@@ -465,6 +500,7 @@ function App() {
           onConnectWallet={handleConnectWallet}
           onPledge={handlePledge}
           onClaim={handleClaim}
+          onSoftDelete={handleSoftDelete}
           onRefund={handleRefund}
         />
       </section>
