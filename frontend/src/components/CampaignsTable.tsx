@@ -209,7 +209,7 @@ export function CampaignsTable({
                   <th>Funding</th>
                   <th>Status</th>
                   <th>Deadline</th>
-                  <th />
+                  <th><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
