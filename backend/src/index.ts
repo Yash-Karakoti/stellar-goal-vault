@@ -12,6 +12,7 @@ import {
   createCampaign,
   getCampaign,
   getCampaignWithProgress,
+  getGlobalStats,
   initCampaignStore,
   listCampaigns,
   softDeleteCampaign,
@@ -38,6 +39,13 @@ import {
 import { logError, logInfo, logRequest } from "./logger";
 
 export const app = express();
+
+interface RequestWithId extends Request {
+  requestId?: string;
+}
+
+import { CampaignRecord, CampaignProgress } from "./services/campaignStore";
+type CampaignListItem = CampaignRecord & { progress: CampaignProgress };
 
 const CAMPAIGN_STATUSES: CampaignStatus[] = ["open", "funded", "claimed", "failed"];
 const CONTRACT_AMOUNT_DECIMALS = Number(process.env.CONTRACT_AMOUNT_DECIMALS ?? 2);
@@ -393,6 +401,11 @@ app.get("/api/config", (_req: Request, res: Response) => {
       walletIntegrationReady,
     },
   });
+});
+
+app.get("/api/stats", (_req: Request, res: Response) => {
+  const stats = getGlobalStats();
+  res.json({ data: stats });
 });
 
 app.use((err: any, req: Request, res: Response, _next: express.NextFunction) => {

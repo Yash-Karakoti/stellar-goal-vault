@@ -234,6 +234,15 @@ export interface ListCampaignsResult {
   totalCount: number;
 }
 
+export interface GlobalStats {
+  totalCampaigns: number;
+  campaignCountByStatus: Record<CampaignStatus, number>;
+  totalPledgedAmount: number;
+  totalContributors: number;
+}
+
+const MAX_CAMPAIGN_DURATION_SECONDS = 60 * 60 * 24 * 180;
+
 export function listCampaigns(options?: ListCampaignsOptions): ListCampaignsResult {
   const db = getDb();
   const page = options?.page ?? 1;
@@ -338,6 +347,15 @@ export function getCampaignWithProgress(campaignId: string) {
 
 export function createCampaign(input: CampaignInput): CampaignRecord {
   const db = getDb();
+  const now = nowInSeconds();
+  if (input.deadline - now > MAX_CAMPAIGN_DURATION_SECONDS) {
+    throw toServiceError(
+      `Campaign duration exceeds maximum of ${MAX_CAMPAIGN_DURATION_SECONDS} seconds.`,
+      400,
+      "MAX_CAMPAIGN_DURATION_EXCEEDED",
+    );
+  }
+
   const campaign: CampaignRecord = {
     id: nextCampaignId(),
     creator: input.creator,
@@ -347,7 +365,7 @@ export function createCampaign(input: CampaignInput): CampaignRecord {
     targetAmount: round(input.targetAmount),
     pledgedAmount: 0,
     deadline: input.deadline,
-    createdAt: nowInSeconds(),
+    createdAt: now,
     metadata: input.metadata,
   };
 
@@ -399,6 +417,14 @@ export function addPledge(campaignId: string, input: PledgeInput): CampaignRecor
 
   const createdAt = nowInSeconds();
   const roundedAmount = round(input.amount);
+  const nextPledgedAmount = round(campaign.pledgedAmount + roundedAmount);
+  if (nextPledgedAmount > campaign.targetAmount) {
+    throw toServiceError(
+      "Pledge exceeds campaign funding cap.",
+      400,
+      "CAMPAIGN_FUNDING_CAP_EXCEEDED",
+    );
+  }
   db.prepare(
     `INSERT INTO pledges (campaign_id, contributor, amount, created_at, refunded_at, transaction_hash)
      VALUES (?, ?, ?, ?, NULL, NULL)`,
@@ -416,7 +442,7 @@ export function addPledge(campaignId: string, input: PledgeInput): CampaignRecor
     input.contributor,
     roundedAmount,
     {
-      newTotalPledged: round(campaign.pledgedAmount + roundedAmount),
+        newTotalPledged: nextPledgedAmount,
       source: "backend-mvp",
     },
     { source: "local" } as BlockchainMetadata,
@@ -459,6 +485,14 @@ export function reconcileOnChainPledge(
   const db = getDb();
   const createdAt = input.confirmedAt ?? nowInSeconds();
   const roundedAmount = round(input.amount);
+  const nextPledgedAmount = round(campaign.pledgedAmount + roundedAmount);
+  if (nextPledgedAmount > campaign.targetAmount) {
+    throw toServiceError(
+      "Pledge exceeds campaign funding cap.",
+      400,
+      "CAMPAIGN_FUNDING_CAP_EXCEEDED",
+    );
+  }
 
   const reconcile = db.transaction(() => {
     db.prepare(
@@ -479,7 +513,7 @@ export function reconcileOnChainPledge(
       input.contributor,
       roundedAmount,
       {
-        newTotalPledged: round(campaign.pledgedAmount + roundedAmount),
+        newTotalPledged: nextPledgedAmount,
         onChain: true,
         reconciled: true,
       },
@@ -492,6 +526,49 @@ export function reconcileOnChainPledge(
 
   reconcile();
   return getCampaign(campaignId)!;
+}
+
+export function getGlobalStats(at = nowInSeconds()): GlobalStats {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT
+        COUNT(*) AS total_campaigns,
+        SUM(CASE WHEN claimed_at IS NOT NULL THEN 1 ELSE 0 END) AS claimed_count,
+        SUM(CASE WHEN claimed_at IS NULL AND pledged_amount >= target_amount THEN 1 ELSE 0 END) AS funded_count,
+        SUM(CASE WHEN claimed_at IS NULL AND pledged_amount < target_amount AND deadline <= ? THEN 1 ELSE 0 END) AS failed_count,
+        SUM(CASE WHEN claimed_at IS NULL AND pledged_amount < target_amount AND deadline > ? THEN 1 ELSE 0 END) AS open_count,
+        COALESCE(SUM(pledged_amount), 0) AS total_pledged
+      FROM campaigns`,
+    )
+    .get(at, at) as {
+    total_campaigns: number;
+    claimed_count: number;
+    funded_count: number;
+    failed_count: number;
+    open_count: number;
+    total_pledged: number;
+  };
+
+  const contributorRow = db
+    .prepare(
+      `SELECT COUNT(DISTINCT contributor) AS total_contributors
+       FROM pledges
+       WHERE refunded_at IS NULL`,
+    )
+    .get() as { total_contributors: number };
+
+  return {
+    totalCampaigns: row.total_campaigns ?? 0,
+    campaignCountByStatus: {
+      open: row.open_count ?? 0,
+      funded: row.funded_count ?? 0,
+      claimed: row.claimed_count ?? 0,
+      failed: row.failed_count ?? 0,
+    },
+    totalPledgedAmount: round(row.total_pledged ?? 0),
+    totalContributors: contributorRow.total_contributors ?? 0,
+  };
 }
 
 export interface ReconciledClaimInput {
