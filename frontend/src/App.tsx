@@ -5,6 +5,7 @@ import { CampaignsTable } from "./components/CampaignsTable";
 import { CampaignTimeline } from "./components/CampaignTimeline";
 import { CreateCampaignForm } from "./components/CreateCampaignForm";
 import { IssueBacklog } from "./components/IssueBacklog";
+import { TransactionPreviewModal, TransactionPreviewData } from "./components/TransactionPreviewModal";
 import { ToastContainer } from "./components/ToastContainer";
 import {
   claimCampaign,
@@ -121,7 +122,17 @@ function App() {
   const [invalidUrlCampaignId, setInvalidUrlCampaignId] = useState<string | null>(null);
   const [connectedWallet, setConnectedWallet] = useState<string | null>(null);
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
+  const [transactionPreview, setTransactionPreview] = useState<{
+    data: TransactionPreviewData;
+    resolve: (approved: boolean) => void;
+  } | null>(null);
 
+
+  const handleTransactionPreview = (data: TransactionPreviewData): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setTransactionPreview({ data, resolve });
+    });
+  };
 
   useEffect(() => {
     setCampaignIdInUrl(selectedCampaignId);
@@ -318,10 +329,7 @@ function App() {
     setPendingPledgeCampaignId(campaignId);
 
     try {
-      if (!appConfig?.walletIntegrationReady || !appConfig.contractId || !appConfig.sorobanRpcUrl) {
-        throw new Error(
-          "Pledge flow requires Freighter signing and Soroban contract configuration.",
-        );
+
       }
 
       const transactionResult = await submitFreighterPledge({
@@ -343,6 +351,9 @@ function App() {
       await refreshCampaigns(campaignId);
       await refreshSelectedData(campaignId);
     } catch (error) {
+      if (error && typeof error === "object" && (error as any).code === "USER_CANCELLED") {
+        return;
+      }
       addToast(getErrorMessage(error), "error");
     } finally {
       setPendingPledgeCampaignId(null);
@@ -370,6 +381,7 @@ function App() {
         campaignId: campaign.id,
         creator: connectedWallet,
         config: appConfig,
+        onPreview: handleTransactionPreview,
       });
 
       await claimCampaign(
@@ -383,6 +395,9 @@ function App() {
       await refreshSelectedData(campaign.id);
       addToast("Campaign claimed successfully.", "success");
     } catch (error) {
+      if (error && typeof error === "object" && (error as any).code === "USER_CANCELLED") {
+        return;
+      }
       addToast(getErrorMessage(error), "error");
     }
   }
@@ -516,7 +531,7 @@ function handleSelect(campaignId: string) {
         <IssueBacklog issues={issues} isLoading={isIssuesLoading} />
       </section>
 
-n
+
     </div>
   );
 }
