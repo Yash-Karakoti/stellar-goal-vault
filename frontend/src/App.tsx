@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+
 import { CampaignDetailPanel } from "./components/CampaignDetailPanel";
+import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay";
 import { CampaignsTable } from "./components/CampaignsTable";
 import { CampaignTimeline } from "./components/CampaignTimeline";
 import { CreateCampaignForm } from "./components/CreateCampaignForm";
@@ -7,13 +8,13 @@ import { IssueBacklog } from "./components/IssueBacklog";
 import { TransactionPreviewModal, TransactionPreviewData } from "./components/TransactionPreviewModal";
 import { ToastContainer } from "./components/ToastContainer";
 import {
-  addPledge,
   claimCampaign,
   createCampaign,
   getAppConfig,
   getCampaign,
   getCampaignHistory,
   listCampaigns,
+  softDeleteCampaign,
   listOpenIssues,
   reconcilePledge,
   refundCampaign,
@@ -34,6 +35,8 @@ import {
 } from "./types/campaign";
 
 const DEFAULT_NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
+const THEME_STORAGE_KEY = "stellar-goal-vault-theme";
+type ThemeMode = "light" | "dark";
 
 function round(value: number): number {
   return Number(value.toFixed(2));
@@ -88,6 +91,15 @@ function toApiError(error: unknown): ApiError {
   return { message: "Something went wrong." };
 }
 
+function getInitialThemeMode(): ThemeMode {
+  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+  if (storedTheme === "light" || storedTheme === "dark") {
+    return storedTheme;
+  }
+
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 function App() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [issues, setIssues] = useState<OpenIssue[]>([]);
@@ -115,7 +127,6 @@ function App() {
     resolve: (approved: boolean) => void;
   } | null>(null);
 
-  const { toasts, addToast, dismiss } = useToast();
 
   const handleTransactionPreview = (data: TransactionPreviewData): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -318,27 +329,24 @@ function App() {
     setPendingPledgeCampaignId(campaignId);
 
     try {
-      if (appConfig?.walletIntegrationReady && appConfig.contractId && appConfig.sorobanRpcUrl) {
-        const transactionResult = await submitFreighterPledge({
-          campaignId,
-          contributor: connectedWallet,
-          amount,
-          config: appConfig,
-          onPreview: handleTransactionPreview,
-        });
 
-        await reconcilePledge(campaignId, {
-          contributor: connectedWallet,
-          amount,
-          transactionHash: transactionResult.transactionHash,
-          confirmedAt: transactionResult.confirmedAt,
-        });
-
-        addToast("Pledge confirmed on-chain and reconciled.", "success");
-      } else {
-        await addPledge(campaignId, { contributor: connectedWallet, amount });
-        addToast("Pledge recorded in the local goal vault.", "success");
       }
+
+      const transactionResult = await submitFreighterPledge({
+        campaignId,
+        contributor: connectedWallet,
+        amount,
+        config: appConfig,
+      });
+
+      await reconcilePledge(campaignId, {
+        contributor: connectedWallet,
+        amount,
+        transactionHash: transactionResult.transactionHash,
+        confirmedAt: transactionResult.confirmedAt,
+      });
+
+      addToast("Pledge confirmed on-chain and reconciled.", "success");
 
       await refreshCampaigns(campaignId);
       await refreshSelectedData(campaignId);
@@ -394,27 +402,66 @@ function App() {
     }
   }
 
-  async function handleRefund(campaignId: string, contributor: string) {
-    try {
-      const sorobanReceipt = await submitRefundTransaction(campaignId, contributor);
-      await refundCampaign(campaignId, contributor, sorobanReceipt);
-      await refreshCampaigns(campaignId);
-      await refreshSelectedData(campaignId);
-      addToast("Contributor refunded successfully.", "success");
-    } catch (error) {
-      addToast(getErrorMessage(error), "error");
-    }
+
   }
 
-  function handleSelect(campaignId: string) {
-    setInvalidUrlCampaignId(null);
-    setSelectedCampaignId(campaignId);
+  if (!confirm(`Soft delete campaign #${campaignId}? Data preserved, hidden from lists.`)) {
+    return;
+  }
+
+  setActionError(null);
+  setActionMessage("Soft deleting...");
+
+  try {
+    await softDeleteCampaign(campaignId);
+    await refreshCampaigns();
+    setActionMessage("Campaign soft deleted.");
+  } catch (error) {
+    setActionError(toApiError(error));
+    setActionMessage(null);
+  }
+}
+
+async function handleRefund(campaignId: string, contributor: string) {
+  setActionError(null);
+  setActionMessage("Preparing Soroban refund transaction...");
+
+  try {
+    const sorobanReceipt = await submitRefundTransaction(campaignId, contributor);
+    await refundCampaign(campaignId, contributor, sorobanReceipt);
+    await refreshCampaigns(campaignId);
+    await refreshSelectedData(campaignId);
+    setActionMessage("Contributor refunded successfully.");
+  } catch (error) {
+    setActionError(toApiError(error));
+    setActionMessage(null);
+  }
+}
+
+function handleSelect(campaignId: string) {
+  setInvalidUrlCampaignId(null);
+  setSelectedCampaignId(campaignId);
+}
+
+  function handleThemeToggle() {
+    setThemeMode((current) => (current === "dark" ? "light" : "dark"));
   }
 
   return (
     <div className="app-shell">
       <header className="hero">
-        <p className="eyebrow">Soroban crowdfunding MVP</p>
+        <div className="hero-topline">
+          <p className="eyebrow">Soroban crowdfunding MVP</p>
+          <button
+            type="button"
+            className="btn-ghost theme-toggle"
+            onClick={handleThemeToggle}
+            aria-label={`Switch to ${themeMode === "dark" ? "light" : "dark"} mode`}
+            title={`Switch to ${themeMode === "dark" ? "light" : "dark"} mode`}
+          >
+            {themeMode === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+        </div>
         <h1>Stellar Goal Vault</h1>
         <p className="hero-copy">
           Create funding goals, collect pledges, and reconcile claim and refund flows
@@ -464,6 +511,7 @@ function App() {
           onConnectWallet={handleConnectWallet}
           onPledge={handlePledge}
           onClaim={handleClaim}
+          onSoftDelete={handleSoftDelete}
           onRefund={handleRefund}
         />
       </section>
@@ -483,21 +531,7 @@ function App() {
         <IssueBacklog issues={issues} isLoading={isIssuesLoading} />
       </section>
 
-      <ToastContainer toasts={toasts} onDismiss={dismiss} />
 
-      {transactionPreview && (
-        <TransactionPreviewModal
-          preview={transactionPreview.data}
-          onConfirm={() => {
-            transactionPreview.resolve(true);
-            setTransactionPreview(null);
-          }}
-          onCancel={() => {
-            transactionPreview.resolve(false);
-            setTransactionPreview(null);
-          }}
-        />
-      )}
     </div>
   );
 }
